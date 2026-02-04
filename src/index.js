@@ -35,10 +35,13 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 }
       `.trim();
 
-      const cacheKey = new Request(url.toString(), request);
-      const cache = caches.default;
-      const cached = await cache.match(cacheKey);
-      if (cached) return cached;
+     // Cache keyed ONLY by URL (prevents browser vs RSS-reader cache split)
+const cache = caches.default;
+const cacheKey = new Request(url.toString(), { method: "GET" });
+
+const cached = await cache.match(cacheKey);
+if (cached) return cached;
+
 
       const endpoint = "https://apineapple-prod.digg.com/graphql";
 
