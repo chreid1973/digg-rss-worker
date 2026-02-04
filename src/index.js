@@ -176,6 +176,8 @@ function buildRss({ title, link, description, items }) {
   <title><![CDATA[${title}]]></title>
   <link>${escapeXml(link)}</link>
   <description><![CDATA[${description}]]></description>
+<ttl>10</ttl>
+
   <lastBuildDate>${now}</lastBuildDate>
 ${itemXml}
 </channel>
