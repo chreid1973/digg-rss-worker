@@ -17,9 +17,11 @@ jobs:
         with:
           node-version: 20
 
-      - name: Deploy
+            - name: Deploy
         uses: cloudflare/wrangler-action@v3
+        env:
+          WRANGLER_LOG: debug
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          command: deploy --verbose
+
