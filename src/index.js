@@ -1,11 +1,12 @@
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     const url = new URL(request.url);
+    let pathname = url.pathname;
 
-    // RSS route
-    if (pathname.endsWith("/all-digg-trending.xml")) {
-      return new Response("Not found", { status: 404 });
+    if (pathname.startsWith("/rss/digg/")) {
+      pathname = pathname.replace("/rss/digg/", "/rss/");
     }
+}
 
     const limit = Math.min(parseInt(url.searchParams.get("limit") || "20", 10), 50);
 
