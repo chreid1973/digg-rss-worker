@@ -3,7 +3,7 @@ export default {
     const url = new URL(request.url);
 
     // RSS route
-    if (url.pathname !== "/rss/all-digg-trending.xml") {
+    if (pathname.endsWith("/all-digg-trending.xml")) {
       return new Response("Not found", { status: 404 });
     }
 
