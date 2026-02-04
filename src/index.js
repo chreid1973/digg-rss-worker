@@ -90,7 +90,7 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
     const rss = buildRss({
       title: "Digg Trending",
       link: "https://digg.com/?feed=all-digg",
-      description: "Top 20 trending posts on Digg (public, logged-out view).",
+      description: "Top 20 trending posts on All Digg (public, logged-out view).",
       items
     });
 
