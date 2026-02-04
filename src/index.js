@@ -1,3 +1,24 @@
+// =========================
+// Helpers for RSS snippets
+// =========================
+
+function makeSnippet(text, maxLen = 220) {
+  if (!text) return "";
+
+  const clean = String(text)
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (clean.length <= maxLen) return clean;
+
+  const truncated = clean.slice(0, maxLen);
+  return truncated.slice(0, truncated.lastIndexOf(" ")) + "…";
+}
+
+// =========================
+// Cloudflare Worker
+// =========================
+
 export default {
   async fetch(request, env, ctx) {
     try {
@@ -35,13 +56,12 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 }
       `.trim();
 
-     // Cache keyed ONLY by URL (prevents browser vs RSS-reader cache split)
-const cache = caches.default;
-const cacheKey = new Request(url.toString(), { method: "GET" });
+      // Cache keyed ONLY by URL
+      const cache = caches.default;
+      const cacheKey = new Request(url.toString(), { method: "GET" });
 
-const cached = await cache.match(cacheKey);
-if (cached) return cached;
-
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached;
 
       const endpoint = "https://apineapple-prod.digg.com/graphql";
 
@@ -118,11 +138,15 @@ if (cached) return cached;
 
         const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
 
+        const snippetSource = node.title || "";
+        const description = makeSnippet(snippetSource);
+
         return {
           title: node.title || "(untitled)",
           link: node.externalContent?.url || diggLink,
           guid: diggLink,
-          pubDate: node.createdDate
+          pubDate: node.createdDate,
+          description
         };
       });
 
@@ -160,6 +184,10 @@ if (cached) return cached;
   }
 };
 
+// =========================
+// RSS Builder
+// =========================
+
 function buildRss({ title, link, description, items }) {
   const now = new Date().toUTCString();
   const itemXml = (items || []).map(it => `
@@ -168,6 +196,7 @@ function buildRss({ title, link, description, items }) {
     <link>${escapeXml(it.link)}</link>
     <guid isPermaLink="true">${escapeXml(it.guid)}</guid>
     <pubDate>${new Date(it.pubDate).toUTCString()}</pubDate>
+    <description><![CDATA[${it.description}]]></description>
   </item>`.trim()).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -176,13 +205,16 @@ function buildRss({ title, link, description, items }) {
   <title><![CDATA[${title}]]></title>
   <link>${escapeXml(link)}</link>
   <description><![CDATA[${description}]]></description>
-<ttl>10</ttl>
-
+  <ttl>10</ttl>
   <lastBuildDate>${now}</lastBuildDate>
 ${itemXml}
 </channel>
 </rss>`;
 }
+
+// =========================
+// Utilities
+// =========================
 
 function escapeXml(s) {
   return String(s || "")
