@@ -3,12 +3,18 @@ export default {
     const url = new URL(request.url);
     let pathname = url.pathname;
 
+    // 👇 THIS BLOCK MUST BE CLOSED
     if (pathname.startsWith("/rss/digg/")) {
       pathname = pathname.replace("/rss/digg/", "/rss/");
     }
-}
 
-    const limit = Math.min(parseInt(url.searchParams.get("limit") || "20", 10), 50);
+    const limit = Math.min(
+      parseInt(url.searchParams.get("limit") || "25", 10),
+      100
+    );
+
+    // rest of your code continues…
+
 
     // Edge cache
     const cacheKey = new Request(url.toString(), request);
