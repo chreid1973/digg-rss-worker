@@ -12,7 +12,58 @@ function makeSnippet(text, maxLen = 220) {
   if (clean.length <= maxLen) return clean;
 
   const truncated = clean.slice(0, maxLen);
-  return truncated.slice(0, truncated.lastIndexOf(" ")) + "…";
+  const cut = truncated.lastIndexOf(" ");
+  return (cut > 40 ? truncated.slice(0, cut) : truncated) + "…";
+}
+
+// =========================
+// YouTube thumbnail helpers
+// =========================
+
+function getYouTubeVideoId(urlStr) {
+  if (!urlStr) return null;
+
+  let u;
+  try { u = new URL(urlStr); } catch { return null; }
+
+  const host = (u.hostname || "").replace(/^www\./, "").toLowerCase();
+
+  // youtu.be/<id>
+  if (host === "youtu.be") {
+    const id = u.pathname.split("/").filter(Boolean)[0];
+    return isValidYouTubeId(id) ? id : null;
+  }
+
+  // youtube.com / m.youtube.com / music.youtube.com
+  if (host.endsWith("youtube.com")) {
+    const path = u.pathname || "";
+
+    // /watch?v=<id>
+    const v = u.searchParams.get("v");
+    if (isValidYouTubeId(v)) return v;
+
+    // /shorts/<id>  OR /embed/<id> OR /live/<id>
+    const parts = path.split("/").filter(Boolean);
+    if (parts.length >= 2) {
+      const kind = parts[0];
+      const id = parts[1];
+      if ((kind === "shorts" || kind === "embed" || kind === "live") && isValidYouTubeId(id)) {
+        return id;
+      }
+    }
+  }
+
+  return null;
+}
+
+function isValidYouTubeId(id) {
+  // YouTube video IDs are typically 11 chars, URL-safe
+  return typeof id === "string" && /^[a-zA-Z0-9_-]{10,16}$/.test(id);
+}
+
+function youtubeThumbUrl(videoId) {
+  // hqdefault is widely available and consistent
+  return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
 
 // =========================
@@ -138,15 +189,22 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
         const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
 
-        const snippetSource = node.title || "";
-        const description = makeSnippet(snippetSource);
+        const link = node.externalContent?.url || diggLink;
+
+        // Snippet: Digg doesn't provide body text in this query, so we use title for now.
+        const description = makeSnippet(node.title || "");
+
+        // YouTube thumbnail via <enclosure> when we can extract a video ID
+        const ytId = getYouTubeVideoId(link);
+        const enclosure = ytId ? { url: youtubeThumbUrl(ytId), type: "image/jpeg" } : null;
 
         return {
           title: node.title || "(untitled)",
-          link: node.externalContent?.url || diggLink,
+          link,
           guid: diggLink,
           pubDate: node.createdDate,
-          description
+          description,
+          enclosure
         };
       });
 
@@ -190,14 +248,21 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
 function buildRss({ title, link, description, items }) {
   const now = new Date().toUTCString();
-  const itemXml = (items || []).map(it => `
+
+  const itemXml = (items || []).map(it => {
+    const enclosureXml = it.enclosure
+      ? `\n    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
+      : "";
+
+    return `
   <item>
     <title><![CDATA[${it.title}]]></title>
     <link>${escapeXml(it.link)}</link>
     <guid isPermaLink="true">${escapeXml(it.guid)}</guid>
     <pubDate>${new Date(it.pubDate).toUTCString()}</pubDate>
-    <description><![CDATA[${it.description}]]></description>
-  </item>`.trim()).join("\n");
+    <description><![CDATA[${it.description}]]></description>${enclosureXml}
+  </item>`.trim();
+  }).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
@@ -220,7 +285,8 @@ function escapeXml(s) {
   return String(s || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function clampInt(v, fallback, min, max) {
