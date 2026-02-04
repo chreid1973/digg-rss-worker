@@ -2,5 +2,6 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "chreid-digg-rss",
   "main": "src/index.js",
-  "compatibility_date": "2026-02-03"
+  "compatibility_date": "2026-02-03",
+  "account_id": "c0a632bc5744d0d6905cc98fa97d4f9a"
 }
