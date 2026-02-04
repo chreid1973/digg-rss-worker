@@ -1,9 +1,7 @@
-export default {
-  async fetch(request) {
-    const url = new URL(request.url);
-let pathname = url.pathname;
+const url = new URL(request.url);
 
-// allow custom domain route prefix
+// normalize /rss/digg/* → /rss/*
+let pathname = url.pathname;
 if (pathname.startsWith("/rss/digg/")) {
   pathname = pathname.replace("/rss/digg/", "/rss/");
 }
@@ -88,9 +86,9 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
     }
 
     const rss = buildRss({
-      title: "Digg Trending",
+      title: "Digg — All Digg (Trending)",
       link: "https://digg.com/?feed=all-digg",
-      description: "Top 20 trending posts on All Digg (public, logged-out view).",
+      description: "Top trending posts on Digg (public, logged-out view).",
       items
     });
 
