@@ -1,7 +1,13 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    let pathname = url.pathname;
+let pathname = url.pathname;
+
+// allow custom domain route prefix
+if (pathname.startsWith("/rss/digg/")) {
+  pathname = pathname.replace("/rss/digg/", "/rss/");
+}
+
 
     // 👇 THIS BLOCK MUST BE CLOSED
     if (pathname.startsWith("/rss/digg/")) {
