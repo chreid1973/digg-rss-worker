@@ -4,14 +4,10 @@ export default {
       const url = new URL(request.url);
       let pathname = url.pathname;
 
-      // If you ever use a route like /rss/digg/* on your domain, normalize it.
       if (pathname.startsWith("/rss/digg/")) {
         pathname = pathname.replace("/rss/digg/", "/rss/");
       }
 
-      // Routes:
-      //   /rss/all-digg-trending.xml         => sitewide trending
-      //   /rss/<community>.xml               => community trending (technology, digg, entertainment, etc.)
       const isAll = pathname === "/rss/all-digg-trending.xml";
       const m = pathname.match(/^\/rss\/([a-z0-9-]+)\.xml$/i);
       const communitySlug = (!isAll && m) ? m[1].toLowerCase() : null;
@@ -21,9 +17,6 @@ export default {
       }
 
       const limit = clampInt(url.searchParams.get("limit"), 10, 1, 50);
-
-      // Digg community pages in your HAR strongly indicate TRENDING-24h behavior.
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
       const gqlQuery = `
 query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort) {
@@ -42,7 +35,6 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 }
       `.trim();
 
-      // Cloudflare edge cache (keyed by full URL including query params)
       const cacheKey = new Request(url.toString(), request);
       const cache = caches.default;
       const cached = await cache.match(cacheKey);
@@ -50,45 +42,61 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
       const endpoint = "https://apineapple-prod.digg.com/graphql";
 
-      // We try a few likely "where" shapes because Digg's PostWhere field naming can vary.
-      // If Digg changes schema, you'll get a readable 502 with errors (not Error 1101).
-      const whereVariants = isAll
-        ? [{ createdDate_GT: since }]
-        : [
-            { createdDate_GT: since, communitySlug: communitySlug },
-            { createdDate_GT: since, communitySlug_EQ: communitySlug },
-            { createdDate_GT: since, community: { slug: communitySlug } },
-            { createdDate_GT: since, community: { slug_EQ: communitySlug } },
-          ];
+      const windowsMs = isAll
+        ? [24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000]
+        : [24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
 
       let edges = null;
       let lastErr = null;
 
-      for (const where of whereVariants) {
-        const payload = {
-          operationName: "PostsQuery",
-          query: gqlQuery,
-          variables: { first: limit, sort: "TOP_N", where }
-        };
+      for (const windowMs of windowsMs) {
+        const since = new Date(Date.now() - windowMs).toISOString();
 
-        const resp = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "accept": "application/json",
-            "user-agent": "3HPM-DiggRSS/1.0 (+https://3holepunchmedia.ca)"
-          },
-          body: JSON.stringify(payload)
-        });
+        const whereVariants = isAll
+          ? [{ createdDate_GT: since }]
+          : [
+              { createdDate_GT: since, communitySlug: communitySlug },
+              { createdDate_GT: since, communitySlug_EQ: communitySlug },
+              { createdDate_GT: since, community: { slug: communitySlug } },
+              { createdDate_GT: since, community: { slug_EQ: communitySlug } },
+            ];
 
-        const json = await resp.json().catch(() => ({}));
+        for (const where of whereVariants) {
+          const payload = {
+            operationName: "PostsQuery",
+            query: gqlQuery,
+            variables: { first: limit, sort: "TOP_N", where }
+          };
 
-        if (resp.ok && json?.data?.posts?.edges && !json?.errors) {
-          edges = json.data.posts.edges;
-          break;
+          const resp = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "accept": "application/json",
+              "user-agent": "3HPM-DiggRSS/1.0 (+https://3holepunchmedia.ca)"
+            },
+            body: JSON.stringify(payload)
+          });
+
+          const json = await resp.json().catch(() => ({}));
+
+          if (resp.ok && json?.data?.posts?.edges && !json?.errors) {
+            const candidate = json.data.posts.edges;
+
+            if (candidate.length >= Math.min(limit, 5)) {
+              edges = candidate;
+              break;
+            }
+
+            if (!edges || candidate.length > edges.length) {
+              edges = candidate;
+            }
+          } else {
+            lastErr = json?.errors || json || { status: resp.status };
+          }
         }
 
-        lastErr = json?.errors || json || { status: resp.status };
+        if (edges && edges.length >= Math.min(limit, 5)) break;
       }
 
       if (!edges) {
@@ -99,7 +107,14 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
       }
 
       const items = edges.map(({ node }) => {
-        const diggLink = `https://digg.com/${node.community.slug}/${node._id}/${node.slug}`;
+        const comm = node.community?.slug || "digg";
+        const rawId = String(node._id || "");
+        const shortId = rawId.startsWith(comm + "-")
+          ? rawId.slice((comm + "-").length)
+          : rawId;
+
+        const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
+
         return {
           title: node.title || "(untitled)",
           link: node.externalContent?.url || diggLink,
@@ -134,7 +149,6 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
       return out;
 
     } catch (err) {
-      // Prevent Cloudflare 1101 pages by returning a readable error.
       return new Response(
         "Worker error: " + (err?.stack || err?.message || String(err)),
         { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } }
