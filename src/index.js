@@ -127,8 +127,8 @@ if (cached) return cached;
       });
 
       const feedTitle = isAll
-        ? "Digg — All Digg (Trending)"
-        : `Digg — ${communitySlug} (Trending)`;
+        ? "Digg — All Digg"
+        : `Digg — ${communitySlug} (Newest)`;
 
       const feedLink = isAll
         ? "https://digg.com/?feed=all-digg"
