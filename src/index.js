@@ -1,48 +1,30 @@
-// =========================
-// Helpers for RSS snippets
-// =========================
-
 function makeSnippet(text, maxLen = 220) {
   if (!text) return "";
-
-  const clean = String(text)
-    .replace(/\s+/g, " ")
-    .trim();
-
+  const clean = String(text).replace(/\s+/g, " ").trim();
   if (clean.length <= maxLen) return clean;
-
   const truncated = clean.slice(0, maxLen);
   const cut = truncated.lastIndexOf(" ");
-  return (cut > 40 ? truncated.slice(0, cut) : truncated) + "…";
+  return (cut > 40 ? truncated.slice(0, cut) : truncated) + "\u2026";
 }
-
-// =========================
-// YouTube thumbnail helpers
-// =========================
+__name(makeSnippet, "makeSnippet");
 
 function getYouTubeVideoId(urlStr) {
   if (!urlStr) return null;
-
   let u;
-  try { u = new URL(urlStr); } catch { return null; }
-
+  try {
+    u = new URL(urlStr);
+  } catch {
+    return null;
+  }
   const host = (u.hostname || "").replace(/^www\./, "").toLowerCase();
-
-  // youtu.be/<id>
   if (host === "youtu.be") {
     const id = u.pathname.split("/").filter(Boolean)[0];
     return isValidYouTubeId(id) ? id : null;
   }
-
-  // youtube.com / m.youtube.com / music.youtube.com
   if (host.endsWith("youtube.com")) {
     const path = u.pathname || "";
-
-    // /watch?v=<id>
     const v = u.searchParams.get("v");
     if (isValidYouTubeId(v)) return v;
-
-    // /shorts/<id>  OR /embed/<id> OR /live/<id>
     const parts = path.split("/").filter(Boolean);
     if (parts.length >= 2) {
       const kind = parts[0];
@@ -52,49 +34,38 @@ function getYouTubeVideoId(urlStr) {
       }
     }
   }
-
   return null;
 }
+__name(getYouTubeVideoId, "getYouTubeVideoId");
 
 function isValidYouTubeId(id) {
-  // YouTube video IDs are typically 11 chars, URL-safe
   return typeof id === "string" && /^[a-zA-Z0-9_-]{10,16}$/.test(id);
 }
+__name(isValidYouTubeId, "isValidYouTubeId");
 
 function youtubeThumbUrl(videoId) {
-  // hqdefault is widely available and consistent
   return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
+__name(youtubeThumbUrl, "youtubeThumbUrl");
 
-// =========================
-// Cloudflare Worker
-// =========================
-
-export default {
+var index_default = {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
       let pathname = url.pathname;
-
       if (pathname.startsWith("/rss/digg/")) {
         pathname = pathname.replace("/rss/digg/", "/rss/");
       }
 
       const isAll = pathname === "/rss/all-digg-trending.xml";
       const m = pathname.match(/^\/rss\/([a-z0-9-]+)\.xml$/i);
-      const communitySlug = (!isAll && m) ? m[1].toLowerCase() : null;
+      const communitySlug = !isAll && m ? m[1].toLowerCase() : null;
 
       if (!isAll && !communitySlug) {
         return new Response("Not found", { status: 404 });
       }
 
       const limit = clampInt(url.searchParams.get("limit"), 10, 1, 50);
-
-      // ✅ mode toggle:
-      // - mode=source (default): <link> goes to external URL if present; description includes "Discuss on Digg"
-      // - mode=digg:            <link> always goes to Digg; description includes "Open original link" if present
-      const mode = (url.searchParams.get("mode") || "source").toLowerCase();
-      const preferDigg = (mode === "digg");
 
       const gqlQuery = `
 query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort) {
@@ -113,18 +84,15 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 }
       `.trim();
 
-      // Cache keyed ONLY by URL (so different ?mode= values cache separately)
       const cache = caches.default;
       const cacheKey = new Request(url.toString(), { method: "GET" });
-
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
 
       const endpoint = "https://apineapple-prod.digg.com/graphql";
-
       const windowsMs = isAll
-        ? [24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000]
-        : [24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
+        ? [24 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3]
+        : [24 * 60 * 60 * 1e3, 72 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3];
 
       let edges = null;
       let lastErr = null;
@@ -135,10 +103,10 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
         const whereVariants = isAll
           ? [{ createdDate_GT: since }]
           : [
-              { createdDate_GT: since, communitySlug: communitySlug },
+              { createdDate_GT: since, communitySlug },
               { createdDate_GT: since, communitySlug_EQ: communitySlug },
               { createdDate_GT: since, community: { slug: communitySlug } },
-              { createdDate_GT: since, community: { slug_EQ: communitySlug } },
+              { createdDate_GT: since, community: { slug_EQ: communitySlug } }
             ];
 
         for (const where of whereVariants) {
@@ -162,12 +130,10 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
           if (resp.ok && json?.data?.posts?.edges && !json?.errors) {
             const candidate = json.data.posts.edges;
-
             if (candidate.length >= Math.min(limit, 5)) {
               edges = candidate;
               break;
             }
-
             if (!edges || candidate.length > edges.length) {
               edges = candidate;
             }
@@ -181,60 +147,51 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
       if (!edges) {
         return new Response(
-          "Upstream error: " + safeJson(lastErr, 2000),
+          "Upstream error: " + safeJson(lastErr, 2e3),
           { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } }
         );
       }
 
+      // External-first behavior:
+// - RSS <link> points to external URL when present, otherwise the Digg post
+// - If external URL exists, description includes "Discuss on Digg"
+// - YouTube enclosure is detected from external URL first (fallback to digg link)
+
       const items = edges.map(({ node }) => {
         const comm = node.community?.slug || "digg";
         const rawId = String(node._id || "");
-        const shortId = rawId.startsWith(comm + "-")
-          ? rawId.slice((comm + "-").length)
-          : rawId;
+        const shortId = rawId.startsWith(comm + "-") ? rawId.slice((comm + "-").length) : rawId;
 
         const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
         const externalUrl = node.externalContent?.url || "";
 
-        // Choose the main click target
-        const link = preferDigg ? diggLink : (externalUrl || diggLink);
+                // Preferred behavior:
+        // - If external exists: RSS <link> goes to external
+        // - Else: RSS <link> goes to Digg
+        const link = externalUrl || diggLink;
 
-        // Snippet: Digg doesn't provide body text in this query, so we use title for now.
-        const snippet = makeSnippet(node.title || "");
+        // Description: snippet + only show "Discuss on Digg" when external exists
+        const baseSnippet = makeSnippet(node.title || "");
+        const description = externalUrl
+          ? `${escapeXml(baseSnippet)}<br/><br/><a href="${escapeXml(diggLink)}">Discuss on Digg</a>`
+          : escapeXml(baseSnippet);
 
-        // Description: provide the "other" link so users can choose easily
-        let description = escapeXml(snippet);
 
-        if (preferDigg) {
-          if (externalUrl) {
-            description += `<br/><br/><a href="${escapeXml(externalUrl)}">Open original link</a>`;
-          }
-        } else {
-          // External-first: always provide discussion home
-          description += `<br/><br/><a href="${escapeXml(diggLink)}">Discuss on Digg</a>`;
-        }
-
-        // YouTube enclosure: detect from external URL first, fallback to digg link
         const ytId = getYouTubeVideoId(externalUrl || diggLink);
         const enclosure = ytId ? { url: youtubeThumbUrl(ytId), type: "image/jpeg" } : null;
 
         return {
           title: node.title || "(untitled)",
           link,
-          guid: diggLink, // keep GUID stable as Digg permalink
+          guid: diggLink,
           pubDate: node.createdDate,
-          description, // HTML-ish, but safely escaped + wrapped in CDATA
+          description,
           enclosure
         };
       });
 
-      const feedTitle = isAll
-        ? "Digg — All Digg"
-        : `Digg — ${communitySlug} (Newest)`;
-
-      const feedLink = isAll
-        ? "https://digg.com/?feed=all-digg"
-        : `https://digg.com/${communitySlug}`;
+      const feedTitle = isAll ? "Digg \u2014 All Digg" : `Digg \u2014 ${communitySlug} (Newest)`;
+      const feedLink = isAll ? "https://digg.com/?feed=all-digg" : `https://digg.com/${communitySlug}`;
 
       const rss = buildRss({
         title: feedTitle,
@@ -252,7 +209,6 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
       ctx.waitUntil(cache.put(cacheKey, out.clone()));
       return out;
-
     } catch (err) {
       return new Response(
         "Worker error: " + (err?.stack || err?.message || String(err)),
@@ -262,19 +218,16 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
   }
 };
 
-// =========================
-// RSS Builder
-// =========================
-
 function buildRss({ title, link, description, items }) {
-  const now = new Date().toUTCString();
+  const now = (/* @__PURE__ */ new Date()).toUTCString();
 
-  const itemXml = (items || []).map(it => {
+  const itemXml = (items || []).map((it) => {
     const enclosureXml = it.enclosure
-      ? `\n    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
+      ? `
+    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
       : "";
 
-    // Prevent CDATA termination if any upstream text contains "]]>"
+    // Prevent accidentally closing CDATA
     const safeTitle = String(it.title || "").replaceAll("]]>", "]]&gt;");
     const safeDesc = String(it.description || "").replaceAll("]]>", "]]&gt;");
 
@@ -303,10 +256,7 @@ ${itemXml}
 </channel>
 </rss>`;
 }
-
-// =========================
-// Utilities
-// =========================
+__name(buildRss, "buildRss");
 
 function escapeXml(s) {
   return String(s || "")
@@ -315,16 +265,27 @@ function escapeXml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+__name(escapeXml, "escapeXml");
 
 function clampInt(v, fallback, min, max) {
   const n = parseInt(v ?? "", 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
 }
+__name(clampInt, "clampInt");
 
 function safeJson(obj, maxLen) {
   let s = "";
-  try { s = JSON.stringify(obj); }
-  catch { s = String(obj); }
-  return s.length > maxLen ? s.slice(0, maxLen) + "…" : s;
+  try {
+    s = JSON.stringify(obj);
+  } catch {
+    s = String(obj);
+  }
+  return s.length > maxLen ? s.slice(0, maxLen) + "\u2026" : s;
 }
+__name(safeJson, "safeJson");
+
+export {
+  index_default as default
+};
+//# sourceMappingURL=index.js.map
