@@ -1,30 +1,49 @@
+// src/index.js
+// Digg RSS Worker (external-first)
+// - <link> points to external URL when present, otherwise the Digg post
+// - If external URL exists, <description> includes "Discuss on Digg"
+// - YouTube enclosure is detected from external URL first (fallback to digg link)
+
 function makeSnippet(text, maxLen = 220) {
   if (!text) return "";
   const clean = String(text).replace(/\s+/g, " ").trim();
   if (clean.length <= maxLen) return clean;
   const truncated = clean.slice(0, maxLen);
   const cut = truncated.lastIndexOf(" ");
-  return (cut > 40 ? truncated.slice(0, cut) : truncated) + "\u2026";
+  return (cut > 40 ? truncated.slice(0, cut) : truncated) + "…";
 }
-__name(makeSnippet, "makeSnippet");
+
+// =========================
+// YouTube thumbnail helpers
+// =========================
 
 function getYouTubeVideoId(urlStr) {
   if (!urlStr) return null;
+
   let u;
   try {
     u = new URL(urlStr);
   } catch {
     return null;
   }
+
   const host = (u.hostname || "").replace(/^www\./, "").toLowerCase();
+
+  // youtu.be/<id>
   if (host === "youtu.be") {
     const id = u.pathname.split("/").filter(Boolean)[0];
     return isValidYouTubeId(id) ? id : null;
   }
+
+  // youtube.com / m.youtube.com / music.youtube.com
   if (host.endsWith("youtube.com")) {
     const path = u.pathname || "";
+
+    // /watch?v=<id>
     const v = u.searchParams.get("v");
     if (isValidYouTubeId(v)) return v;
+
+    // /shorts/<id> OR /embed/<id> OR /live/<id>
     const parts = path.split("/").filter(Boolean);
     if (parts.length >= 2) {
       const kind = parts[0];
@@ -34,25 +53,29 @@ function getYouTubeVideoId(urlStr) {
       }
     }
   }
+
   return null;
 }
-__name(getYouTubeVideoId, "getYouTubeVideoId");
 
 function isValidYouTubeId(id) {
   return typeof id === "string" && /^[a-zA-Z0-9_-]{10,16}$/.test(id);
 }
-__name(isValidYouTubeId, "isValidYouTubeId");
 
 function youtubeThumbUrl(videoId) {
   return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
-__name(youtubeThumbUrl, "youtubeThumbUrl");
 
-var index_default = {
+// =========================
+// Worker
+// =========================
+
+export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
       let pathname = url.pathname;
+
+      // Back-compat: /rss/digg/<slug>.xml -> /rss/<slug>.xml
       if (pathname.startsWith("/rss/digg/")) {
         pathname = pathname.replace("/rss/digg/", "/rss/");
       }
@@ -84,15 +107,19 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 }
       `.trim();
 
+      // Cache keyed only by URL
       const cache = caches.default;
       const cacheKey = new Request(url.toString(), { method: "GET" });
+
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
 
       const endpoint = "https://apineapple-prod.digg.com/graphql";
+
+      // Try smaller window first for freshness; widen if low volume
       const windowsMs = isAll
-        ? [24 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3]
-        : [24 * 60 * 60 * 1e3, 72 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3];
+        ? [24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000]
+        : [24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
 
       let edges = null;
       let lastErr = null;
@@ -130,10 +157,14 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 
           if (resp.ok && json?.data?.posts?.edges && !json?.errors) {
             const candidate = json.data.posts.edges;
+
+            // Good enough? stop early
             if (candidate.length >= Math.min(limit, 5)) {
               edges = candidate;
               break;
             }
+
+            // Keep the best partial result so far
             if (!edges || candidate.length > edges.length) {
               edges = candidate;
             }
@@ -146,16 +177,11 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
       }
 
       if (!edges) {
-        return new Response(
-          "Upstream error: " + safeJson(lastErr, 2e3),
-          { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } }
-        );
+        return new Response("Upstream error: " + safeJson(lastErr, 2000), {
+          status: 502,
+          headers: { "content-type": "text/plain; charset=utf-8" }
+        });
       }
-
-      // External-first behavior:
-// - RSS <link> points to external URL when present, otherwise the Digg post
-// - If external URL exists, description includes "Discuss on Digg"
-// - YouTube enclosure is detected from external URL first (fallback to digg link)
 
       const items = edges.map(({ node }) => {
         const comm = node.community?.slug || "digg";
@@ -165,18 +191,16 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
         const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
         const externalUrl = node.externalContent?.url || "";
 
-                // Preferred behavior:
-        // - If external exists: RSS <link> goes to external
-        // - Else: RSS <link> goes to Digg
+        // External-first: if external exists, that's the primary click target
         const link = externalUrl || diggLink;
 
-        // Description: snippet + only show "Discuss on Digg" when external exists
+        // Description: snippet + "Discuss on Digg" only when external exists
         const baseSnippet = makeSnippet(node.title || "");
         const description = externalUrl
           ? `${escapeXml(baseSnippet)}<br/><br/><a href="${escapeXml(diggLink)}">Discuss on Digg</a>`
           : escapeXml(baseSnippet);
 
-
+        // YouTube thumb via <enclosure>
         const ytId = getYouTubeVideoId(externalUrl || diggLink);
         const enclosure = ytId ? { url: youtubeThumbUrl(ytId), type: "image/jpeg" } : null;
 
@@ -190,7 +214,7 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
         };
       });
 
-      const feedTitle = isAll ? "Digg \u2014 All Digg" : `Digg \u2014 ${communitySlug} (Newest)`;
+      const feedTitle = isAll ? "Digg — All Digg" : `Digg — ${communitySlug} (Newest)`;
       const feedLink = isAll ? "https://digg.com/?feed=all-digg" : `https://digg.com/${communitySlug}`;
 
       const rss = buildRss({
@@ -210,28 +234,32 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
       ctx.waitUntil(cache.put(cacheKey, out.clone()));
       return out;
     } catch (err) {
-      return new Response(
-        "Worker error: " + (err?.stack || err?.message || String(err)),
-        { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } }
-      );
+      return new Response("Worker error: " + (err?.stack || err?.message || String(err)), {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
     }
   }
 };
 
+// =========================
+// RSS Builder
+// =========================
+
 function buildRss({ title, link, description, items }) {
-  const now = (/* @__PURE__ */ new Date()).toUTCString();
+  const now = new Date().toUTCString();
 
-  const itemXml = (items || []).map((it) => {
-    const enclosureXml = it.enclosure
-      ? `
-    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
-      : "";
+  const itemXml = (items || [])
+    .map((it) => {
+      const enclosureXml = it.enclosure
+        ? `\n    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
+        : "";
 
-    // Prevent accidentally closing CDATA
-    const safeTitle = String(it.title || "").replaceAll("]]>", "]]&gt;");
-    const safeDesc = String(it.description || "").replaceAll("]]>", "]]&gt;");
+      // Prevent accidentally closing CDATA
+      const safeTitle = String(it.title || "").replaceAll("]]>", "]]&gt;");
+      const safeDesc = String(it.description || "").replaceAll("]]>", "]]&gt;");
 
-    return `
+      return `
   <item>
     <title><![CDATA[${safeTitle}]]></title>
     <link>${escapeXml(it.link)}</link>
@@ -239,7 +267,8 @@ function buildRss({ title, link, description, items }) {
     <pubDate>${new Date(it.pubDate).toUTCString()}</pubDate>
     <description><![CDATA[${safeDesc}]]></description>${enclosureXml}
   </item>`.trim();
-  }).join("\n");
+    })
+    .join("\n");
 
   const safeChannelTitle = String(title || "").replaceAll("]]>", "]]&gt;");
   const safeChannelDesc = String(description || "").replaceAll("]]>", "]]&gt;");
@@ -256,7 +285,10 @@ ${itemXml}
 </channel>
 </rss>`;
 }
-__name(buildRss, "buildRss");
+
+// =========================
+// Utilities
+// =========================
 
 function escapeXml(s) {
   return String(s || "")
@@ -265,14 +297,12 @@ function escapeXml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-__name(escapeXml, "escapeXml");
 
 function clampInt(v, fallback, min, max) {
   const n = parseInt(v ?? "", 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
 }
-__name(clampInt, "clampInt");
 
 function safeJson(obj, maxLen) {
   let s = "";
@@ -281,11 +311,5 @@ function safeJson(obj, maxLen) {
   } catch {
     s = String(obj);
   }
-  return s.length > maxLen ? s.slice(0, maxLen) + "\u2026" : s;
+  return s.length > maxLen ? s.slice(0, maxLen) + "…" : s;
 }
-__name(safeJson, "safeJson");
-
-export {
-  index_default as default
-};
-//# sourceMappingURL=index.js.map
