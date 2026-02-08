@@ -21,7 +21,8 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         env:
           WRANGLER_LOG: debug
+          NPM_CONFIG_YES: "true"
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          wranglerVersion: "4"
+          wranglerVersion: "4.63.0"
           command: deploy
