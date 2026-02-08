@@ -90,6 +90,12 @@ export default {
 
       const limit = clampInt(url.searchParams.get("limit"), 10, 1, 50);
 
+      // ✅ mode toggle:
+      // - mode=source (default): <link> goes to external URL if present; description includes "Discuss on Digg"
+      // - mode=digg:            <link> always goes to Digg; description includes "Open original link" if present
+      const mode = (url.searchParams.get("mode") || "source").toLowerCase();
+      const preferDigg = (mode === "digg");
+
       const gqlQuery = `
 query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort) {
   posts(first: $first, after: $after, where: $where, sort: $sort) {
@@ -107,7 +113,7 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
 }
       `.trim();
 
-      // Cache keyed ONLY by URL
+      // Cache keyed ONLY by URL (so different ?mode= values cache separately)
       const cache = caches.default;
       const cacheKey = new Request(url.toString(), { method: "GET" });
 
@@ -188,22 +194,36 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
           : rawId;
 
         const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
+        const externalUrl = node.externalContent?.url || "";
 
-        const link = node.externalContent?.url || diggLink;
+        // Choose the main click target
+        const link = preferDigg ? diggLink : (externalUrl || diggLink);
 
         // Snippet: Digg doesn't provide body text in this query, so we use title for now.
-        const description = makeSnippet(node.title || "");
+        const snippet = makeSnippet(node.title || "");
 
-        // YouTube thumbnail via <enclosure> when we can extract a video ID
-        const ytId = getYouTubeVideoId(link);
+        // Description: provide the "other" link so users can choose easily
+        let description = escapeXml(snippet);
+
+        if (preferDigg) {
+          if (externalUrl) {
+            description += `<br/><br/><a href="${escapeXml(externalUrl)}">Open original link</a>`;
+          }
+        } else {
+          // External-first: always provide discussion home
+          description += `<br/><br/><a href="${escapeXml(diggLink)}">Discuss on Digg</a>`;
+        }
+
+        // YouTube enclosure: detect from external URL first, fallback to digg link
+        const ytId = getYouTubeVideoId(externalUrl || diggLink);
         const enclosure = ytId ? { url: youtubeThumbUrl(ytId), type: "image/jpeg" } : null;
 
         return {
           title: node.title || "(untitled)",
           link,
-          guid: diggLink,
+          guid: diggLink, // keep GUID stable as Digg permalink
           pubDate: node.createdDate,
-          description,
+          description, // HTML-ish, but safely escaped + wrapped in CDATA
           enclosure
         };
       });
@@ -254,22 +274,29 @@ function buildRss({ title, link, description, items }) {
       ? `\n    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
       : "";
 
+    // Prevent CDATA termination if any upstream text contains "]]>"
+    const safeTitle = String(it.title || "").replaceAll("]]>", "]]&gt;");
+    const safeDesc = String(it.description || "").replaceAll("]]>", "]]&gt;");
+
     return `
   <item>
-    <title><![CDATA[${it.title}]]></title>
+    <title><![CDATA[${safeTitle}]]></title>
     <link>${escapeXml(it.link)}</link>
     <guid isPermaLink="true">${escapeXml(it.guid)}</guid>
     <pubDate>${new Date(it.pubDate).toUTCString()}</pubDate>
-    <description><![CDATA[${it.description}]]></description>${enclosureXml}
+    <description><![CDATA[${safeDesc}]]></description>${enclosureXml}
   </item>`.trim();
   }).join("\n");
+
+  const safeChannelTitle = String(title || "").replaceAll("]]>", "]]&gt;");
+  const safeChannelDesc = String(description || "").replaceAll("]]>", "]]&gt;");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
 <channel>
-  <title><![CDATA[${title}]]></title>
+  <title><![CDATA[${safeChannelTitle}]]></title>
   <link>${escapeXml(link)}</link>
-  <description><![CDATA[${description}]]></description>
+  <description><![CDATA[${safeChannelDesc}]]></description>
   <ttl>10</ttl>
   <lastBuildDate>${now}</lastBuildDate>
 ${itemXml}
