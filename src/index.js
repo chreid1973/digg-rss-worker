@@ -2,7 +2,9 @@
 // Helpers for RSS snippets
 // =========================
 
-function makeSnippet(text, maxLen = 220) {
+const SNIPPET_LEN = 220;
+
+function makeSnippet(text, maxLen = SNIPPET_LEN) {
   if (!text) return "";
 
   const clean = String(text)
@@ -84,6 +86,9 @@ export default {
 
       const limit = clampInt(url.searchParams.get("limit"), 10, 1, 50);
 
+      // NOTE: We request TL;DR + preview fields here.
+      // - contextCards { tldr { text } } is commonly what backs the “under title” line for link posts
+      // - textPreview often backs the “under title” line for text posts
       const gqlQuery = `
 query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
   posts(first: $first, where: $where, sort: $sort) {
@@ -93,6 +98,9 @@ query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
         title
         slug
         createdDate
+        type
+        textPreview
+        contextCards { tldr { text } }
         externalContent { url }
         community { slug }
       }
@@ -112,6 +120,7 @@ query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
         : [24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
 
       let edges = null;
+      let lastErr = null;
 
       for (const windowMs of windowsMs) {
         const since = new Date(Date.now() - windowMs).toISOString();
@@ -135,18 +144,24 @@ query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
         });
 
         const json = await resp.json().catch(() => ({}));
-        if (resp.ok && json?.data?.posts?.edges?.length) {
+
+        if (resp.ok && json?.data?.posts?.edges?.length && !json?.errors) {
           edges = json.data.posts.edges;
           break;
         }
+
+        lastErr = json?.errors || json || { status: resp.status };
       }
 
       if (!edges) {
-        return new Response("Upstream error", { status: 502 });
+        return new Response(
+          "Upstream error: " + safeJson(lastErr, 2000),
+          { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } }
+        );
       }
 
       // =========================
-      // External-first + Discuss on Digg
+      // External-first + Discuss on Digg + TL;DR/Preview description
       // =========================
 
       const items = edges.map(({ node }) => {
@@ -159,11 +174,18 @@ query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
         const diggLink = `https://digg.com/${comm}/${shortId}/${node.slug}`;
         const externalUrl = node.externalContent?.url || "";
 
-        // External-first
+        // External-first click target
         const link = externalUrl || diggLink;
 
-        // TL;DR snippet (title-based for now)
-        const snippet = makeSnippet(node.title || "");
+        // Under-title text source priority:
+        // 1) TL;DR (when present)
+        // 2) textPreview (when present)
+        // 3) title fallback
+        const tldrText = node?.contextCards?.tldr?.text || "";
+        const previewText = node?.textPreview || "";
+        const sourceText = tldrText || previewText || node?.title || "";
+
+        const snippet = makeSnippet(sourceText, SNIPPET_LEN);
 
         // Only show Discuss link when external exists
         const description = externalUrl
@@ -212,8 +234,8 @@ query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
 
     } catch (err) {
       return new Response(
-        "Worker error: " + (err?.message || String(err)),
-        { status: 500 }
+        "Worker error: " + (err?.stack || err?.message || String(err)),
+        { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } }
       );
     }
   }
@@ -226,27 +248,33 @@ query PostsQuery($first: Int, $where: PostWhere, $sort: PostSort) {
 function buildRss({ title, link, description, items }) {
   const now = new Date().toUTCString();
 
-  const itemXml = items.map(it => {
+  const safeChannelTitle = cdataSafe(title);
+  const safeChannelDesc = cdataSafe(description);
+
+  const itemXml = (items || []).map(it => {
     const enclosureXml = it.enclosure
       ? `\n    <enclosure url="${escapeXml(it.enclosure.url)}" type="${escapeXml(it.enclosure.type)}" length="0" />`
       : "";
 
+    const safeItemTitle = cdataSafe(it.title);
+    const safeItemDesc = cdataSafe(it.description);
+
     return `
   <item>
-    <title><![CDATA[${it.title}]]></title>
+    <title><![CDATA[${safeItemTitle}]]></title>
     <link>${escapeXml(it.link)}</link>
     <guid isPermaLink="true">${escapeXml(it.guid)}</guid>
     <pubDate>${new Date(it.pubDate).toUTCString()}</pubDate>
-    <description><![CDATA[${it.description}]]></description>${enclosureXml}
+    <description><![CDATA[${safeItemDesc}]]></description>${enclosureXml}
   </item>`.trim();
   }).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
 <channel>
-  <title><![CDATA[${title}]]></title>
+  <title><![CDATA[${safeChannelTitle}]]></title>
   <link>${escapeXml(link)}</link>
-  <description><![CDATA[${description}]]></description>
+  <description><![CDATA[${safeChannelDesc}]]></description>
   <ttl>10</ttl>
   <lastBuildDate>${now}</lastBuildDate>
 ${itemXml}
@@ -266,8 +294,20 @@ function escapeXml(s) {
     .replace(/"/g, "&quot;");
 }
 
+// Prevent accidentally closing CDATA in any field we wrap in CDATA
+function cdataSafe(s) {
+  return String(s || "").replace(/]]>/g, "]]&gt;");
+}
+
 function clampInt(v, fallback, min, max) {
   const n = parseInt(v ?? "", 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
+}
+
+function safeJson(obj, maxLen) {
+  let s = "";
+  try { s = JSON.stringify(obj); }
+  catch { s = String(obj); }
+  return s.length > maxLen ? s.slice(0, maxLen) + "…" : s;
 }
