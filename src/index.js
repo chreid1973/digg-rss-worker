@@ -191,8 +191,16 @@ async function fetchDiggTldr(diggLink, tldrMax, ctx) {
 // RSS Builder
 // =========================
 
-function buildRss({ title, link, description, items }) {
+function buildRss({ title, link, description, items, selfUrl }) {
   const now = new Date().toUTCString();
+
+  // Atom rel="self" (best practice for RSS 2.0 portability)
+  // Canonicalize: strip query string so ?limit=25 doesn't create "phantom feeds"
+  const feedUrl = new URL(selfUrl);
+  feedUrl.search = "";
+
+  const atomSelfLink = `
+  <atom:link href="${escapeXml(feedUrl.toString())}" rel="self" type="application/rss+xml" />`;
 
   const itemXml = (items || [])
     .map((it) => {
@@ -214,10 +222,10 @@ function buildRss({ title, link, description, items }) {
     .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
   <title><![CDATA[${cdataSafe(title)}]]></title>
-  <link>${escapeXml(link)}</link>
+  <link>${escapeXml(link)}</link>${atomSelfLink}
   <description><![CDATA[${cdataSafe(description)}]]></description>
   <ttl>10</ttl>
   <lastBuildDate>${now}</lastBuildDate>
@@ -388,7 +396,8 @@ query PostsQuery($first: Int, $after: String, $where: PostWhere, $sort: PostSort
         title: feedTitle,
         link: feedLink,
         description: feedTitle,
-        items
+        items,
+        selfUrl: request.url
       });
 
       const out = new Response(rss, {
